@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import argparse, time, os
 import tensorflow as tf
 
