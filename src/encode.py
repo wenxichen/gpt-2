@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-# Usage:
-#  PYTHONPATH=src ./encode.py <file|directory|glob> /path/to/output.npz
-#!/usr/bin/env python3
 
 import argparse
 import numpy as np
