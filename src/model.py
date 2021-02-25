@@ -25,6 +25,8 @@ def softmax(x, axis=-1):
 def gelu(x):
     return 0.5*x*(1+tf.tanh(np.sqrt(2/np.pi)*(x+0.044715*tf.pow(x, 3))))
 
+## REPLACE WITH
+## tf.keras.layers.LayerNormalization(epsilon=1e-5)
 def norm(x, scope, *, axis=-1, epsilon=1e-5):
     """Normalize to mean = 0, std = 1, then do a diagonal affine transform."""
     with tf.variable_scope(scope):
@@ -47,6 +49,9 @@ def merge_states(x):
     *start, a, b = shape_list(x)
     return tf.reshape(x, start + [a*b])
 
+## REPLACE WITH
+## w_init = tf.random_normal_initializer(stddev=0.02)
+## tf.keras.layers.Dense(d_model*3, kernel_initializer=w_init)
 def conv1d(x, scope, nf, *, w_init_stdev=0.02):
     with tf.variable_scope(scope):
         *start, nx = shape_list(x)
@@ -55,6 +60,7 @@ def conv1d(x, scope, nf, *, w_init_stdev=0.02):
         c = tf.reshape(tf.matmul(tf.reshape(x, [-1, nx]), tf.reshape(w, [-1, nf]))+b, start+[nf])
         return c
 
+## TODO
 def attention_mask(nd, ns, *, dtype):
     """1's in the lower triangle, counting from the lower right corner.
 
@@ -66,6 +72,7 @@ def attention_mask(nd, ns, *, dtype):
     return tf.cast(m, dtype)
 
 
+## REPLACE WITH MultiHeadAttention
 def attn(x, scope, n_state, *, past, hparams):
     assert x.shape.ndims == 3  # Should be [batch, sequence, features]
     assert n_state % hparams.n_head == 0
@@ -111,7 +118,7 @@ def attn(x, scope, n_state, *, past, hparams):
         a = conv1d(a, 'c_proj', n_state)
         return a, present
 
-
+## REPLACE WITH point_wise_feed_forward_network(d_model, n_state)
 def mlp(x, scope, n_state, *, hparams):
     with tf.variable_scope(scope):
         nx = x.shape[-1].value
@@ -119,7 +126,7 @@ def mlp(x, scope, n_state, *, hparams):
         h2 = conv1d(h, 'c_proj', nx)
         return h2
 
-
+## REPLACE WITH DecoderLayer
 def block(x, scope, *, past, hparams):
     with tf.variable_scope(scope):
         nx = x.shape[-1].value
@@ -149,14 +156,20 @@ def model(hparams, X, past=None, scope='model', reuse=False):
         results = {}
         batch, sequence = shape_list(X)
 
+        # ------------------------
+        # position and vocab embedding
+        ## REPLACED WITH Embedding
         wpe = tf.get_variable('wpe', [hparams.n_ctx, hparams.n_embd],
                              initializer=tf.random_normal_initializer(stddev=0.01))
         wte = tf.get_variable('wte', [hparams.n_vocab, hparams.n_embd],
                              initializer=tf.random_normal_initializer(stddev=0.02))
         past_length = 0 if past is None else tf.shape(past)[-2]
         h = tf.gather(wte, X) + tf.gather(wpe, positions_for(X, past_length))
+        # ------------------------
 
-        # Transformer
+        # -----------------------
+        # Transformer Decoder
+        ## REPLACED WITH Decoder
         presents = []
         pasts = tf.unstack(past, axis=1) if past is not None else [None] * hparams.n_layer
         assert len(pasts) == hparams.n_layer
@@ -165,10 +178,14 @@ def model(hparams, X, past=None, scope='model', reuse=False):
             presents.append(present)
         results['present'] = tf.stack(presents, axis=1)
         h = norm(h, 'ln_f')
+        # -----------------------
 
-        # Language model loss.  Do tokens <n predict token n?
+        # -----------------------
+        # lookup tokens
+        ## REPLACED WITH LookUp
         h_flat = tf.reshape(h, [batch*sequence, hparams.n_embd])
         logits = tf.matmul(h_flat, wte, transpose_b=True)
         logits = tf.reshape(logits, [batch, sequence, hparams.n_vocab])
+        # -----------------------
         results['logits'] = logits
         return results

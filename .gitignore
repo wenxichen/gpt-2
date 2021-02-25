@@ -1,3 +1,7 @@
 __pycache__
 .mypy_cache/
 models/
+checkpoint/
+*.ipynb
+.ipynb*
+datasets/
