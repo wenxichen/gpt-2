@@ -1,3 +1,37 @@
+# Retrain gpt-2 model with tensorflow2 (GPU supported)
+
+The training scripts train_tf2.py, load_dataset.py and encode.py are evolved from [nshepperd/gpt-2](https://github.com/nshepperd/gpt-2), the rest *-tf2.py scripts are based upon the corresponding original [openai/gpt-2](https://github.com/openai/gpt-2) scripts.
+
+## Usage
+
+Download gpt-2 model to retrain (currently only 117M is tested and used as default in other scripts):
+```
+python download_model.py 117M
+```
+
+Create encoded data file:
+```
+src/encode.py data.txt data.npz
+```
+
+Train on the data:
+```
+src/train_tf2.py --dataset wiki.train.raw.npz --run_name myrun
+```
+
+Unconditional sampling using the trained checkpoint:
+```
+src/generate_unconditional_samples_tf2.py --length 100 --ckpt_name myrun --nsamples 1
+```
+
+Interactive conditional sampling using the trained checkpoint:
+```
+src/interactive_conditional_samples_tf2.py --length 100 --ckpt_name myrun
+```
+
+---
+*[Below are original doc from openai/gpt-2 with latest commit on Dec 2/2020]*
+
 **Status:** Archive (code is provided as-is, no updates expected)
 
 # gpt-2
