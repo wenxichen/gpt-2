@@ -1,13 +1,25 @@
 import numpy as np
 import tensorflow as tf
 
-HPARAMS = {
+HPARAMS_117M = {
   "n_vocab": 50257,
   "n_ctx": 1024,
   "n_embd": 768,
   "n_head": 12,
   "n_layer": 12
 }
+
+HPARAMS_355M = {
+  "n_vocab": 50257,
+  "n_ctx": 1024,
+  "n_embd": 1024,
+  "n_head": 16,
+  "n_layer": 24
+}
+
+HPARAMS = {"117M": HPARAMS_117M,
+           "355M": HPARAMS_355M}
+
 
 def gelu(x):
     return 0.5*x*(1+tf.tanh(np.sqrt(2/np.pi)*(x+0.044715*tf.pow(x, 3))))
