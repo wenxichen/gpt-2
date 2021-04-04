@@ -131,7 +131,7 @@ def train(model_name, dataset, run_name, batch_size, learning_rate, encoding,
 
             if int(ckpt.step) % print_loss_every == 0:
                 print(
-                    '[{step} | {time:2.2f}] loss={loss:2.2f} avg={avg:2.2f}'
+                    '[{step} | {time:2.2f}] loss={loss:2.4f} avg={avg:2.4f}'
                     .format(
                         step=int(ckpt.step),
                         time=time.time() - start_time,

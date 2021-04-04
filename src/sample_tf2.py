@@ -25,6 +25,10 @@ def top_k_logits(logits, k):
 
 def top_p_logits(logits, p):
     """Nucleus sampling"""
+    if p == 0:
+        return logits
+
+    # It seems 0 top_p will just return the highest.
     batch = logits.shape[0]
     sorted_logits = tf.sort(logits, direction='DESCENDING', axis=-1)
     cumulative_probs = tf.math.cumsum(
