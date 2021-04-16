@@ -2,6 +2,6 @@ __pycache__
 .mypy_cache/
 models/
 checkpoint/
-*.ipynb
+gpt2_tf2.ipynb
 .ipynb*
 datasets/

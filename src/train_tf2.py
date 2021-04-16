@@ -8,6 +8,7 @@ import model_tf2, sample_tf2, encoder
 
 CHECKPOINT_ROOT = './checkpoint'
 SEQ_LEN = 1024
+WEIGHTS = {"117M": "./models/117M_tf2/pretrained_weights.h5"}
 
 parser = argparse.ArgumentParser(
     description='Train GPT-2 on your custom dataset.',
@@ -22,6 +23,7 @@ parser.add_argument('--accumulate_gradients', metavar='N', type=int, default=1, 
 parser.add_argument('--top_k', type=int, default=40, help='K for top-k sampling.')
 parser.add_argument('--top_p', type=float, default=0.0, help='P for top-p sampling. Overrides top_k if set > 0.')
 parser.add_argument('--run_name', type=str, default='run1', help='Run id. Name of subdirectory in checkpoint/ and samples/')
+parser.add_argument('--restore_from', type=str, default='latest', help='Either "latest", "fresh", "scratch", or a path to a checkpoint file')
 parser.add_argument('--sample_every', metavar='N', type=int, default=1000, help='Generate samples every N steps')
 parser.add_argument('--sample_length', metavar='TOKENS', type=int, default=256, help='Sample this many tokens')
 parser.add_argument('--save_every', metavar='N', type=int, default=1000, help='Write a checkpoint every N steps')
@@ -46,30 +48,39 @@ def generate_sample(gpt2_model, enc, sampler, sample_length, top_k, top_p):
         batch_size=1)
     return enc.decode(output[0,1:].numpy())
 
-def train(model_name, dataset, run_name, batch_size, learning_rate, encoding, 
+def train(model_name, dataset, run_name, restore_from, batch_size, learning_rate, encoding, 
     print_loss_every, save_every, sample_every, sample_length, top_k, top_p, 
-    combine, accumulate_gradients):
+    combine, accumulate_gradients, ):
     
     enc = encoder.get_encoder(model_name, "models")
     
     train_loss = tf.keras.metrics.Mean(name='train_loss')
 
-    optimizer = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
-    gpt2 = model_tf2.GPT2(model_tf2.HPARAMS[model_name])
+    gpt2 = model_tf2.create_GPT2_model(model_tf2.HPARAMS[model_name])
 
     # Setup checkpoint manager
-    checkpoint_path = os.path.join(CHECKPOINT_ROOT, args.run_name)
+    checkpoint_path = os.path.join(CHECKPOINT_ROOT, run_name)
     ckpt = tf.train.Checkpoint(step=tf.Variable(1), gpt2=gpt2, optimizer=optimizer)
     ckpt_manager = tf.train.CheckpointManager(
         ckpt, checkpoint_path, max_to_keep=5
     )
-    if ckpt_manager.latest_checkpoint:
+    if restore_from=='latest' and ckpt_manager.latest_checkpoint:
         ckpt.restore(ckpt_manager.latest_checkpoint)
         print('Checkpoint restored from {}'\
             .format(ckpt_manager.latest_checkpoint))
+    elif restore_from!='scratch':
+        if model_name in WEIGHTS:
+            weights_path = WEIGHTS[model_name]
+            print("Loading weights from {}...".format(weights_path))
+            gpt2.load_weights(weights_path)
+        else:
+            print("No weights exists for {} model, initializing model from scratch.".format(model_name))
     else:
-        print("Initializing from scratch.")
+        print("Initializing model from scratch.")
+
+    gpt2.summary()
 
     # The @tf.function trace-compiles train_step into a TF graph 
     # for faster execution. The function specializes to the precise 
@@ -84,11 +95,11 @@ def train(model_name, dataset, run_name, batch_size, learning_rate, encoding,
     def train_step(inp):
         real = inp[:,1:]
         
-        dec_padding_mask = model_tf2.create_look_ahead_mask(tf.shape(inp)[1])
+        # dec_padding_mask = model_tf2.create_look_ahead_mask(tf.shape(inp)[1])
 
         with tf.GradientTape() as tape:
             predictions, present, attn_weights = \
-                gpt2(inp, None, dec_padding_mask)
+                gpt2(inp, None)
             loss = loss_function(real, predictions[:,:-1])
 
         gradients = tape.gradient(loss, gpt2.trainable_variables)    
@@ -120,7 +131,7 @@ def train(model_name, dataset, run_name, batch_size, learning_rate, encoding,
 
             train_loss.reset_states()
 
-            inp = data_sampler.sample_batch(SEQ_LEN, args.batch_size)
+            inp = data_sampler.sample_batch(SEQ_LEN, batch_size)
 
             train_step(inp)
             

@@ -1,6 +1,6 @@
 import tensorflow as tf
-
 import model_tf2
+import logging
 
 
 def top_k_logits(logits, k):
@@ -67,8 +67,9 @@ def sample_sequence(*, gpt2_model, length, start_token=None,
     past = None
     
     for _ in range(length):
-        mask = model_tf2.create_look_ahead_mask(context.shape[1])
-        out, present, att_w = gpt2_model(context, past, mask)
+        # logging.info("context shape: %s", context.shape)
+        # mask = model_tf2.create_look_ahead_mask(context.shape[1])
+        out, present, att_w = gpt2_model(context, past)
         next_token_logits = \
             out[:,-1,:] / tf.cast(temperature, tf.float32)
         next_token_logits = top_k_logits(next_token_logits, k=top_k)

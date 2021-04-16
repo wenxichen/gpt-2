@@ -31,26 +31,38 @@ def shape_list(x):
     dynamic = tf.shape(x)
     return [dynamic[i] if s is None else s for i, s in enumerate(static)]
 
-def create_look_ahead_mask(size):
-    mask = 1 - tf.linalg.band_part(tf.ones((size, size)), -1, 0)
-    return mask  # (seq_len, seq_len)
-    
+# def create_look_ahead_mask(size):
+#     mask = 1 - tf.linalg.band_part(tf.ones((size, size)), -1, 0)
+#     return mask  # (seq_len, seq_len)
 
-def scaled_dot_product_attention(q, k, v, mask):
+def attention_mask(nd, ns, *, dtype):
+    """1's in the lower triangle, counting from the lower right corner.
+
+    Same as tf.matrix_band_part(tf.ones([nd, ns]), -1, ns-nd), but doesn't produce garbage on TPUs.
+    """
+    i = tf.range(nd)[:,None]
+    j = tf.range(ns)
+    m = i >= j - ns + nd
+    return tf.cast(m, dtype)
+
+def mask_attn_weights(w):
+    # w has shape [batch, heads, dst_sequence, src_sequence], where information flows from src to dst.
+    _, _, nd, ns = shape_list(w)
+    b = attention_mask(nd, ns, dtype=w.dtype)
+    b = tf.reshape(b, [1, 1, nd, ns])
+    w = w*b - tf.cast(1e10, w.dtype)*(1-b)
+    return w
+
+def scaled_dot_product_attention(q, k, v):
     """Calculate the attention weights.
     q, k, v must have matching leading dimensions.
     k, v must have matching penultimate dimension, 
     i.e.: seq_len_k = seq_len_v.
-    The mask has different shapes depending on its type
-    (padding or look ahead) 
-    but it must be broadcastable for addition.
 
     Args:
         q: query shape == (..., seq_len_q, depth)
         k: key shape == (..., seq_len_k, depth)
         v: value shape == (..., seq_len_v, depth_v)
-        mask: Float tensor with shape broadcastable 
-            to (..., seq_len_q, seq_len_k). Defaults to None.
 
     Returns:
         output, attention_weights
@@ -64,8 +76,7 @@ def scaled_dot_product_attention(q, k, v, mask):
     scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
 
     # add the mask to the scaled tensor.
-    if mask is not None:
-        scaled_attention_logits += (mask * -1e9)  
+    scaled_attention_logits = mask_attn_weights(scaled_attention_logits)  
 
     # softmax is normalized on the last axis (seq_len_k) 
     # so that the scores add up to 1.
@@ -80,8 +91,8 @@ def scaled_dot_product_attention(q, k, v, mask):
 
 
 class MultiHeadAttention(tf.keras.layers.Layer):
-    def __init__(self, d_model, num_heads):
-        super(MultiHeadAttention, self).__init__()
+    def __init__(self, d_model, num_heads, name):
+        super(MultiHeadAttention, self).__init__(name=name)
         
         assert d_model % num_heads == 0
 
@@ -90,8 +101,8 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         self.depth = d_model // self.num_heads
 
         w_init = tf.random_normal_initializer(stddev=0.02)
-        self.dense1 = tf.keras.layers.Dense(d_model*3, kernel_initializer=w_init)
-        self.dense2 = tf.keras.layers.Dense(d_model, kernel_initializer=w_init)
+        self.dense1 = tf.keras.layers.Dense(d_model*3, kernel_initializer=w_init, name='c_attn')
+        self.dense2 = tf.keras.layers.Dense(d_model, kernel_initializer=w_init, name='c_proj')
         
     def split_heads(self, x, batch_size):
         """Split the last dimension into (num_heads, depth).
@@ -103,7 +114,7 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         )
         return tf.transpose(x, perm=[0, 2, 1, 3])
 
-    def call(self, X, past, mask):
+    def call(self, X, past):
         # X: (batch, sequence, d_model)
 
         batch_size = tf.shape(X)[0]
@@ -125,7 +136,7 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         # attention_weights.shape == 
         #   (batch_size, num_heads, seq_len_q, seq_len_k)
         scaled_attention, attention_weights = \
-            scaled_dot_product_attention(q, k, v, mask)
+            scaled_dot_product_attention(q, k, v)
         concat_attention = tf.reshape(
             scaled_attention,                       
             (batch_size, -1, self.d_model)
@@ -136,29 +147,42 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         return output, present, attention_weights
 
 
-def point_wise_feed_forward_network(d_model, dff):
-    w_init = tf.random_normal_initializer(stddev=0.02)
-    return tf.keras.Sequential([
-        # (batch_size, seq_len, dff)
-        tf.keras.layers.Dense(dff, activation=gelu, kernel_initializer=w_init),  
-        # (batch_size, seq_len, d_model)
-        tf.keras.layers.Dense(d_model, kernel_initializer=w_init)  
-  ])
+# def point_wise_feed_forward_network(d_model, dff, name):
+#     w_init = tf.random_normal_initializer(stddev=0.02)
+#     return tf.keras.Sequential([
+#         # (batch_size, seq_len, dff)
+#         tf.keras.layers.Dense(dff, activation=gelu, kernel_initializer=w_init, name='c_fc'),
+#         # (batch_size, seq_len, d_model)
+#         tf.keras.layers.Dense(d_model, kernel_initializer=w_init, name='c_proj')  
+#   ], name=name)
 
+
+class PointWiseFF(tf.keras.layers.Layer):
+    def __init__(self, d_model, dff, name):
+        super(PointWiseFF, self).__init__(name=name)
+        w_init = tf.random_normal_initializer(stddev=0.02)
+        # (batch_size, seq_len, dff)
+        self.dense1 = tf.keras.layers.Dense(dff, activation=gelu, kernel_initializer=w_init, name='c_fc')
+        # (batch_size, seq_len, d_model)
+        self.dense2 = tf.keras.layers.Dense(d_model, kernel_initializer=w_init, name='c_proj')
+
+    def call(self, X):
+        return self.dense2(self.dense1(X))
+        
 
 class DecoderLayer(tf.keras.layers.Layer):
-    def __init__(self, d_model, num_heads, dff):
-        super(DecoderLayer, self).__init__()
-        self.mha = MultiHeadAttention(d_model, num_heads)
+    def __init__(self, d_model, num_heads, dff, name):
+        super(DecoderLayer, self).__init__(name=name)
+        self.mha = MultiHeadAttention(d_model, num_heads, name='attn')
 
-        self.ffn = point_wise_feed_forward_network(d_model, dff)
+        self.ffn = PointWiseFF(d_model, dff, name='mlp')
 
         self.layernorm1 = \
-            tf.keras.layers.LayerNormalization(epsilon=1e-5)
+            tf.keras.layers.LayerNormalization(epsilon=1e-5, name='ln_1')
         self.layernorm2 = \
-            tf.keras.layers.LayerNormalization(epsilon=1e-5)
+            tf.keras.layers.LayerNormalization(epsilon=1e-5, name='ln_2')
 
-    def call(self, X, past, mask):
+    def call(self, X, past):
         # X: (batch, sequence, d_model)
         X_norm = self.layernorm1(X)
         # attn: (batch_size, target_seq_len, d_model)
@@ -166,7 +190,7 @@ class DecoderLayer(tf.keras.layers.Layer):
         # where depth = d_model // num_heads
         # attn_weihgts_block: (batch_size, num_heads, seq_len_q, seq_len_k)
         attn, present, attn_weights_block = self.mha(
-            X_norm, past, mask
+            X_norm, past
         )
         X_res_1 = attn + X
         X_res_1_norm = self.layernorm2(X_res_1)
@@ -177,19 +201,19 @@ class DecoderLayer(tf.keras.layers.Layer):
 
 
 class Decoder(tf.keras.layers.Layer):
-    def __init__(self, hparams):
-        super(Decoder, self).__init__()
+    def __init__(self, hparams, name):
+        super(Decoder, self).__init__(name=name)
         self.num_layers = hparams['n_layer']
         self.d_model = hparams['n_embd']
         self.num_heads = hparams['n_head']
         self.dec_layers = [
-            DecoderLayer(self.d_model, self.num_heads, self.d_model*4) 
-            for _ in range(self.num_layers)
+            DecoderLayer(self.d_model, self.num_heads, self.d_model*4, name=('h' + str(i)))
+            for i in range(self.num_layers)
         ]
         self.layernorm = \
-            tf.keras.layers.LayerNormalization(epsilon=1e-5)
+            tf.keras.layers.LayerNormalization(epsilon=1e-5, name='ln_f')
 
-    def call(self, X, past, mask):
+    def call(self, X, past):
         # X: (batch, sequence, d_model)
         attention_weights = []
         presents = []
@@ -200,7 +224,7 @@ class Decoder(tf.keras.layers.Layer):
             # X: (batch_size, target_seq_len, d_model)
             # present: (batch_size, 2, num_heads, seq_len_v, depth)
             X, present, attn_weights_block = \
-                self.dec_layers[i](X, pasts[i], mask)
+                self.dec_layers[i](X, pasts[i])
             presents.append(present)
             attention_weights.append(attn_weights_block)
         # (batch_size, num_layers, 2, num_heads, seq_len_v, depth)
@@ -247,8 +271,8 @@ class LookUp(tf.keras.layers.Layer):
 
 
 class GPT2(tf.keras.Model):
-    def __init__(self, hparams):
-        super(GPT2, self).__init__()
+    def __init__(self, hparams, name='gpt2_tf2'):
+        super(GPT2, self).__init__(name=name)
         self.hparams = hparams
         wpe_init = tf.random_normal_initializer(
             mean=0.0, stddev=0.01, seed=None
@@ -256,20 +280,30 @@ class GPT2(tf.keras.Model):
         wte_init = tf.random_normal_initializer(
             mean=0.0, stddev=0.02, seed=None
         )
-        self.wpe = tf.Variable(wpe_init(shape=[hparams['n_ctx'],hparams['n_embd']]))
-        self.wte = tf.Variable(wte_init(shape=[hparams['n_vocab'],hparams['n_embd']]))
+        self.wpe = tf.Variable(wpe_init(shape=[hparams['n_ctx'],hparams['n_embd']]), name='gpt2_tf2/wpe')
+        self.wte = tf.Variable(wte_init(shape=[hparams['n_vocab'],hparams['n_embd']]), name='gpt2_tf2/wte')
         self.embedding = Embedding(self.wpe, self.wte)
-        self.decoder = Decoder(hparams)
+        self.decoder = Decoder(hparams, name='decoder')
         self.final_layer = LookUp(self.wte)
 
 
-    def call(self, X, past, mask):
+    def call(self, X, past):
         # X: (batch_size, sequence)
         batch, sequence = shape_list(X)
         h = self.embedding(X, past) # (batch_size, sequence, d_model)
         # out: (batch_size, target_seq_len, d_model)
         # present: (batch_size, num_layers, 2, num_heads, seq_len_v, depth)
         # attn_weights: list of (batch_size, num_heads, seq_len_q, seq_len_k) with length num_layers
-        out, present, attn_weights = self.decoder(h, past, mask)
+        out, present, attn_weights = self.decoder(h, past)
         final_output = self.final_layer(out)
         return final_output, present, attn_weights
+
+def init_GPT2_model_vars(gpt2):
+    X = tf.convert_to_tensor(np.array([[35, 789], [98, 69]]))
+    logits, presents, _ = gpt2(X, None)
+
+def create_GPT2_model(hparams, name='gpt2_tf2'):
+    """Create and initialize the model variables."""
+    gpt2 = GPT2(hparams, name=name)
+    init_GPT2_model_vars(gpt2)
+    return gpt2
