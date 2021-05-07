@@ -28,6 +28,10 @@ parser.add_argument('--sample_every', metavar='N', type=int, default=1000, help=
 parser.add_argument('--sample_length', metavar='TOKENS', type=int, default=256, help='Sample this many tokens')
 parser.add_argument('--save_every', metavar='N', type=int, default=1000, help='Write a checkpoint every N steps')
 parser.add_argument('--print_loss_every', metavar='STEPS', type=int, default=10, help='Print loss every STEPS steps.')
+parser.add_argument('--val_dataset', metavar='PATH', type=str, default=None, help='Dataset for validation loss, defaults to --dataset.')
+parser.add_argument('--val_batch_size', metavar='SIZE', type=int, default=1, help='Batch size for validation.')
+# parser.add_argument('--val_batch_count', metavar='N', type=int, default=40, help='Number of batches for validation.')
+parser.add_argument('--val_every', metavar='STEPS', type=int, default=0, help='Calculate validation loss every STEPS steps.')
 
 def loss_function(real, pred):
     loss = tf.reduce_mean(
@@ -50,11 +54,14 @@ def generate_sample(gpt2_model, enc, sampler, sample_length, top_k, top_p):
 
 def train(model_name, dataset, run_name, restore_from, batch_size, learning_rate, encoding, 
     print_loss_every, save_every, sample_every, sample_length, top_k, top_p, 
-    combine, accumulate_gradients, ):
+    combine, accumulate_gradients, 
+    val_every, val_dataset, val_batch_size):
     
     enc = encoder.get_encoder(model_name, "models")
     
     train_loss = tf.keras.metrics.Mean(name='train_loss')
+
+    # validation_loss = tf.keras.metrics.Mean(name='validation_loss')
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
@@ -109,14 +116,29 @@ def train(model_name, dataset, run_name, restore_from, batch_size, learning_rate
 
         train_loss(loss)
 
+    def validation(val_inp):
+        val_real = val_inp[:,1:]
+        predictions, _, _ = \
+            gpt2(val_inp, None)
+        loss = loss_function(val_real, predictions[:,:-1])
+        return loss
+
+
     # Loading data
     print('Loading dataset...')
     chunks = load_dataset(enc, dataset, combine, encoding=encoding)
     data_sampler = Sampler(chunks)
     print('dataset has', data_sampler.total_size, 'tokens')
+    if val_every > 0:
+        if val_dataset:
+            val_chunks = load_dataset(enc, val_dataset, combine, encoding=encoding)
+        else:
+            val_chunks = chunks
+        val_data_sampler = Sampler(val_chunks)
 
     print('Training...')
     avg_loss = (0.0, 0.0)
+    avg_val_loss = (0.0, 0.0)
     start_time = time.time()
 
     try:
@@ -128,14 +150,31 @@ def train(model_name, dataset, run_name, restore_from, batch_size, learning_rate
                 print('Generating samples...')
                 sample = generate_sample(gpt2, enc, data_sampler, sample_length, top_k, top_p)
                 print(sample)
+            if val_every > 0 and (int(ckpt.step) % val_every == 0 or int(ckpt.step) == 1):
+                val_inp = val_data_sampler.sample_batch(SEQ_LEN, val_batch_size)
+                val_loss = validation(val_inp)
+                # validation_loss.reset_states()
+                # val_loss = validation_loss.result()
+                avg_val_loss = \
+                    (avg_val_loss[0] * 0.99 + val_loss,
+                     avg_val_loss[1] * 0.99 + 1.0)
+                print(
+                    '=% val_loss={val_loss:2.4f} avg_val_loss={avg_val_loss:2.4f} %='
+                    .format(
+                        val_loss=val_loss,
+                        avg_val_loss=avg_val_loss[0] / avg_val_loss[1]))
 
-            train_loss.reset_states()
+            # train_loss.reset_states()
 
             inp = data_sampler.sample_batch(SEQ_LEN, batch_size)
 
-            train_step(inp)
+            # train_step(inp)
             
-            batch_loss = train_loss.result()
+            # batch_loss = train_loss.result()
+
+            predictions, _, _ = gpt2(inp, None)
+
+            batch_loss = loss_function(inp[:,1:], predictions[:,:-1]).numpy()
 
             avg_loss = (avg_loss[0] * 0.99 + batch_loss,
                         avg_loss[1] * 0.99 + 1.0)
@@ -152,8 +191,8 @@ def train(model_name, dataset, run_name, restore_from, batch_size, learning_rate
             ckpt.step.assign_add(1)
     except KeyboardInterrupt:
         print('interrupted')
-        ckpt_save_path = ckpt_manager.save()
-        print ('Saving checkpoint for step {} at {}'.format(int(ckpt.step), ckpt_save_path))
+        # ckpt_save_path = ckpt_manager.save()
+        # print ('Saving checkpoint for step {} at {}'.format(int(ckpt.step), ckpt_save_path))
 
 
 if __name__ == '__main__':
