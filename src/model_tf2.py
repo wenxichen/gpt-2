@@ -100,19 +100,25 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         self.d_model = d_model
         self.depth = d_model // self.num_heads
 
-        w_init = tf.random_normal_initializer(stddev=0.02)
-        self.dense1 = tf.keras.layers.Dense(d_model*3, kernel_initializer=w_init, name='c_attn')
-        self.dense2 = tf.keras.layers.Dense(d_model, kernel_initializer=w_init, name='c_proj')
+        w_init_1 = tf.random_normal_initializer(stddev=0.02)
+        w_init_2 = tf.random_normal_initializer(stddev=0.02)
+        self.dense1 = tf.keras.layers.Dense(d_model*3, kernel_initializer=w_init_1, name='c_attn')
+        self.dense2 = tf.keras.layers.Dense(d_model, kernel_initializer=w_init_2, name='c_proj')
         
     def split_heads(self, x, batch_size):
         """Split the last dimension into (num_heads, depth).
         Transpose the result such that the shape is 
         (batch_size, num_heads, seq_len, depth)
         """
-        x = tf.reshape(
-            x, (batch_size, -1, self.num_heads, self.depth)
-        )
+        n = self.num_heads
+        *start, m = shape_list(x)
+        x = tf.reshape(x, start + [n, m//n])
         return tf.transpose(x, perm=[0, 2, 1, 3])
+
+    def merge_heads(self, x):
+        x = tf.transpose(x, perm=[0, 2, 1, 3])
+        *start, a, b = shape_list(x)
+        return tf.reshape(x, start + [a*b])
 
     def call(self, X, past):
         # X: (batch, sequence, d_model)
@@ -137,10 +143,10 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         #   (batch_size, num_heads, seq_len_q, seq_len_k)
         scaled_attention, attention_weights = \
             scaled_dot_product_attention(q, k, v)
-        concat_attention = tf.reshape(
-            scaled_attention,                       
-            (batch_size, -1, self.d_model)
-        )  # (batch_size, seq_len_q, d_model)
+
+        # (batch_size, seq_len_q, d_model)
+        concat_attention = self.merge_heads(scaled_attention)
+
         # (batch_size, seq_len_q, d_model)
         output = self.dense2(concat_attention)
 
@@ -245,57 +251,78 @@ def positions_for(tokens, past_length):
     return expand_tile(past_length + tf.range(nsteps), batch_size)
 
 
-class Embedding(tf.keras.layers.Layer):
-    def __init__(self, wpe, wte):
-        super(Embedding, self).__init__()
-        self.wpe = wpe
-        self.wte = wte
+class SharedEmbeddings(tf.keras.layers.Layer):
+    """Perform shared embedding. Code adapt from https://github.com/huggingface/transformers/blob/dc3f6758cfe84a29fa87e9ce05b9b45e10cdb155/src/transformers/modeling_tf_utils.py#L1382"""
+    def __init__(self, vocab_size, hidden_size, name='gpt2_tf2'):
+        super().__init__(name=name)
+        self.vocab_size = vocab_size
+        self.hidden_size = hidden_size
 
-    def call(self, X, past):
-        past_length = 0 if past is None else tf.shape(past)[-2]
-        h = tf.gather(self.wte, X) + tf.gather(self.wpe, positions_for(X, past_length))
-        return h
+    def build(self, input_shape):
+        self.weight = self.add_weight(
+            "weight",
+            shape=[self.vocab_size, self.hidden_size], 
+            initializer="random_normal",
+            trainable=True
+        )
+        # super().build(input_shape)
 
+    def _embedding(self, input_ids):
+        """Applies embedding based on inputs tensor."""
+        return tf.gather(self.weight, input_ids)
 
-class LookUp(tf.keras.layers.Layer):
-    def __init__(self, wte):
-        super(LookUp, self).__init__()
-        self.wte = wte
-    
-    def call(self, X):
-        batch_size, sequence, _ = shape_list(X)
-        X_flat = tf.reshape(X, [batch_size*sequence, -1])
-        out = tf.matmul(X_flat, self.wte, transpose_b=True)
-        out = tf.reshape(out, [batch_size, sequence, -1])
-        return out
+    def _linear(self, inputs):
+        """
+        Computes logits by running inputs through a linear layer.
+
+        Args:
+            inputs: A float32 tensor with shape [..., hidden_size]
+
+        Returns:
+            float32 tensor with shape [..., vocab_size].
+        """
+        first_dims = shape_list(inputs)[:-1]
+        x = tf.reshape(inputs, [-1, self.hidden_size])
+        logits = tf.matmul(x, self.weight, transpose_b=True)
+
+        return tf.reshape(logits, first_dims + [self.vocab_size])
+
+    def call(self, inputs, mode):
+        if mode == "embedding":
+            return self._embedding(inputs)
+        elif mode == "linear":
+            return self._linear(inputs)
+        else:
+            raise ValueError("mode {} is not valid.".format(mode))
 
 
 class GPT2(tf.keras.Model):
     def __init__(self, hparams, name='gpt2_tf2'):
         super(GPT2, self).__init__(name=name)
         self.hparams = hparams
-        wpe_init = tf.random_normal_initializer(
-            mean=0.0, stddev=0.01, seed=None
+        self.wte = SharedEmbeddings(
+            hparams['n_vocab'], hparams['n_embd'], name="wte"
         )
-        wte_init = tf.random_normal_initializer(
-            mean=0.0, stddev=0.02, seed=None
+        self.wpe = tf.keras.layers.Embedding(
+            hparams['n_ctx'],
+            hparams['n_embd'],
+            embeddings_initializer="random_normal",
+            name="wpe",
         )
-        self.wpe = tf.Variable(wpe_init(shape=[hparams['n_ctx'],hparams['n_embd']]), name='gpt2_tf2/wpe')
-        self.wte = tf.Variable(wte_init(shape=[hparams['n_vocab'],hparams['n_embd']]), name='gpt2_tf2/wte')
-        self.embedding = Embedding(self.wpe, self.wte)
         self.decoder = Decoder(hparams, name='decoder')
-        self.final_layer = LookUp(self.wte)
 
 
     def call(self, X, past):
         # X: (batch_size, sequence)
         batch, sequence = shape_list(X)
-        h = self.embedding(X, past) # (batch_size, sequence, d_model)
+        # (batch_size, sequence, d_model)
+        past_length = 0 if past is None else tf.shape(past)[-2]
+        h = self.wte(X, mode="embedding") + self.wpe(positions_for(X, past_length))
         # out: (batch_size, target_seq_len, d_model)
         # present: (batch_size, num_layers, 2, num_heads, seq_len_v, depth)
         # attn_weights: list of (batch_size, num_heads, seq_len_q, seq_len_k) with length num_layers
         out, present, attn_weights = self.decoder(h, past)
-        final_output = self.final_layer(out)
+        final_output = self.wte(out, mode="linear")
         return final_output, present, attn_weights
 
 def init_GPT2_model_vars(gpt2):

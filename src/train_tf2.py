@@ -69,7 +69,7 @@ def train(model_name, dataset, run_name, restore_from, batch_size, learning_rate
 
     # Setup checkpoint manager
     checkpoint_path = os.path.join(CHECKPOINT_ROOT, run_name)
-    ckpt = tf.train.Checkpoint(step=tf.Variable(1), gpt2=gpt2, optimizer=optimizer)
+    ckpt = tf.train.Checkpoint(step=tf.Variable(1), train_time=tf.Variable(0.0), gpt2=gpt2, optimizer=optimizer)
     ckpt_manager = tf.train.CheckpointManager(
         ckpt, checkpoint_path, max_to_keep=5
     )
@@ -139,7 +139,7 @@ def train(model_name, dataset, run_name, restore_from, batch_size, learning_rate
     print('Training...')
     avg_loss = (0.0, 0.0)
     avg_val_loss = (0.0, 0.0)
-    start_time = time.time()
+    previous_time = time.time()
 
     try:
         while True:
@@ -164,35 +164,35 @@ def train(model_name, dataset, run_name, restore_from, batch_size, learning_rate
                         val_loss=val_loss,
                         avg_val_loss=avg_val_loss[0] / avg_val_loss[1]))
 
-            # train_loss.reset_states()
+            train_loss.reset_states()
 
             inp = data_sampler.sample_batch(SEQ_LEN, batch_size)
 
-            # train_step(inp)
+            train_step(inp)
             
-            # batch_loss = train_loss.result()
-
-            predictions, _, _ = gpt2(inp, None)
-
-            batch_loss = loss_function(inp[:,1:], predictions[:,:-1]).numpy()
+            batch_loss = train_loss.result()
 
             avg_loss = (avg_loss[0] * 0.99 + batch_loss,
                         avg_loss[1] * 0.99 + 1.0)
+
+            cur_time = time.time()
+            ckpt.train_time.assign_add(cur_time - previous_time)
+            previous_time = cur_time
 
             if int(ckpt.step) % print_loss_every == 0:
                 print(
                     '[{step} | {time:2.2f}] loss={loss:2.4f} avg={avg:2.4f}'
                     .format(
                         step=int(ckpt.step),
-                        time=time.time() - start_time,
+                        time=float(ckpt.train_time),
                         loss=batch_loss,
                         avg=avg_loss[0] / avg_loss[1]))
 
             ckpt.step.assign_add(1)
     except KeyboardInterrupt:
         print('interrupted')
-        # ckpt_save_path = ckpt_manager.save()
-        # print ('Saving checkpoint for step {} at {}'.format(int(ckpt.step), ckpt_save_path))
+        ckpt_save_path = ckpt_manager.save()
+        print ('Saving checkpoint for step {} at {}'.format(int(ckpt.step), ckpt_save_path))
 
 
 if __name__ == '__main__':
