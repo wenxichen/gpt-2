@@ -53,13 +53,13 @@ def interact_model(
     assert nsamples % batch_size == 0
 
     enc = encoder.get_encoder(model_name, models_dir)
-    hparams = model_tf2.HPARAMS
+    hparams = model_tf2.HPARAMS[model_name]
     with open(os.path.join(models_dir, model_name, 'hparams.json')) as f:
         hparams.update(json.load(f))
 
     if length is None:
-        length = hparams['n_ctx']
-    elif length > hparams['n_ctx']:
+        length = hparams['n_ctx'] - 1
+    elif length >= hparams['n_ctx']:
         raise ValueError("Can't get samples longer than window size: %s" % hparams['n_ctx'])
 
     # Setup checkpoint manager

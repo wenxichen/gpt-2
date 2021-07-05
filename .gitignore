@@ -6,3 +6,5 @@ gpt2_tf2.ipynb
 .ipynb*
 datasets/
 *_debug.ipynb
+**/local_only
+**/logs/

@@ -207,8 +207,8 @@ class DecoderLayer(tf.keras.layers.Layer):
 
 
 class Decoder(tf.keras.layers.Layer):
-    def __init__(self, hparams, name):
-        super(Decoder, self).__init__(name=name)
+    def __init__(self, hparams, name, **kwargs):
+        super(Decoder, self).__init__(name=name, **kwargs)
         self.num_layers = hparams['n_layer']
         self.d_model = hparams['n_embd']
         self.num_heads = hparams['n_head']
@@ -297,8 +297,8 @@ class SharedEmbeddings(tf.keras.layers.Layer):
 
 
 class GPT2(tf.keras.Model):
-    def __init__(self, hparams, name='gpt2_tf2'):
-        super(GPT2, self).__init__(name=name)
+    def __init__(self, hparams, name='gpt2_tf2', train_wte_weight_only=False, **kwargs):
+        super(GPT2, self).__init__(name=name, **kwargs)
         self.hparams = hparams
         self.wte = SharedEmbeddings(
             hparams['n_vocab'], hparams['n_embd'], name="wte"
@@ -308,8 +308,9 @@ class GPT2(tf.keras.Model):
             hparams['n_embd'],
             embeddings_initializer="random_normal",
             name="wpe",
+            trainable=(not train_wte_weight_only)
         )
-        self.decoder = Decoder(hparams, name='decoder')
+        self.decoder = Decoder(hparams, name='decoder', trainable=(not train_wte_weight_only))
 
 
     def call(self, X, past):
@@ -329,8 +330,8 @@ def init_GPT2_model_vars(gpt2):
     X = tf.convert_to_tensor(np.array([[35, 789], [98, 69]]))
     logits, presents, _ = gpt2(X, None)
 
-def create_GPT2_model(hparams, name='gpt2_tf2'):
+def create_GPT2_model(hparams, name='gpt2_tf2', train_wte_weight_only=False):
     """Create and initialize the model variables."""
-    gpt2 = GPT2(hparams, name=name)
+    gpt2 = GPT2(hparams, name=name, train_wte_weight_only=train_wte_weight_only)
     init_GPT2_model_vars(gpt2)
     return gpt2

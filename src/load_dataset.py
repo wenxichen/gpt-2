@@ -7,17 +7,20 @@ import tqdm
 
 def load_dataset(enc, path, combine, encoding=None):
     paths = []
-    if os.path.isfile(path):
-        # Simple file
-        paths.append(path)
-    elif os.path.isdir(path):
-        # Directory
-        for (dirpath, _, fnames) in os.walk(path):
-            for fname in fnames:
-                paths.append(os.path.join(dirpath, fname))
-    else:
-        # Assume glob
-        paths = glob.glob(path)
+    if type(path) == str:
+        if os.path.isfile(path):
+            # Simple file
+            paths.append(path)
+        elif os.path.isdir(path):
+            # Directory
+            for (dirpath, _, fnames) in os.walk(path):
+                for fname in fnames:
+                    paths.append(os.path.join(dirpath, fname))
+        else:
+            # Assume glob
+            paths = glob.glob(path)
+    elif type(path) == list:
+        paths = path
 
     token_chunks = []
     raw_text = ''
